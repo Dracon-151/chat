@@ -3,17 +3,66 @@
 // Recreación fiel y animada en tiempo real
 // ==========================================================================
 
+// Temporizador pausable para soporte exacto de pausa estilo Historias de Instagram
+class PausableTimeout {
+  constructor(callback, delay, autoStart = true) {
+    this.callback = callback;
+    this.remaining = delay;
+    this.timerId = null;
+    this.startTime = null;
+    this.isPaused = !autoStart;
+    if (autoStart) {
+      this.resume();
+    }
+  }
+
+  pause() {
+    if (this.isPaused || this.timerId === null) return;
+    this.isPaused = true;
+    clearTimeout(this.timerId);
+    this.timerId = null;
+    const elapsed = Date.now() - this.startTime;
+    this.remaining = Math.max(0, this.remaining - elapsed);
+  }
+
+  resume() {
+    if (!this.isPaused && this.timerId !== null) return;
+    this.isPaused = false;
+    this.startTime = Date.now();
+    const delay = Math.max(0, this.remaining);
+    this.timerId = setTimeout(() => {
+      this.timerId = null;
+      this.callback();
+    }, delay);
+  }
+
+  clear() {
+    if (this.timerId !== null) {
+      clearTimeout(this.timerId);
+      this.timerId = null;
+    }
+    this.isPaused = true;
+  }
+}
+
 class TinderChatApp {
   constructor() {
     this.messages = CHAT_DATA;
     this.currentIndex = 0;
     this.isPlaying = true;
+    this.hasStarted = false;
+    this.isHoldingPause = false;
+    this.isFinished = false;
     this.speed = 1.0;
     this.soundEnabled = true;
-    this.timeoutId = null;
+    this.activeTimer = null;
     this.audioCtx = null;
 
     // DOM Elements
+    this.phoneFrame = document.getElementById('phoneFrame');
+    this.splash = document.getElementById('tinderSplash');
+    this.splashStartBtn = document.getElementById('splashStartBtn');
+    this.storyPausePill = document.getElementById('storyPausePill');
     this.feed = document.getElementById('messagesFeed');
     this.chatContainer = document.getElementById('chatContainer');
     this.typingIndicator = document.getElementById('typingIndicator');
@@ -24,19 +73,45 @@ class TinderChatApp {
     this.init();
   }
 
+  scheduleTimeout(callback, delay) {
+    if (this.activeTimer) {
+      this.activeTimer.clear();
+    }
+    const autoStart = !this.isHoldingPause && this.isPlaying;
+    this.activeTimer = new PausableTimeout(callback, delay, autoStart);
+    return this.activeTimer;
+  }
+
   init() {
     this.bindEvents();
 
     // Comprobar si se solicitó ver todo directamente mediante URL (?skip=1)
     const urlParams = new URLSearchParams(window.location.search);
     if (urlParams.get('skip') === '1') {
+      if (this.splash) this.splash.style.display = 'none';
+      this.hasStarted = true;
       this.skipToEnd();
-    } else {
-      // Iniciar automáticamente tras una breve pausa para cargar la interfaz
-      setTimeout(() => {
-        this.playNextStep();
-      }, 700);
     }
+  }
+
+  // Iniciar la reproducción tras pulsar la pantalla splash
+  startChat() {
+    if (this.hasStarted) return;
+    this.hasStarted = true;
+    this.initAudio();
+
+    // Transición suave de salida para la pantalla splash de Tinder
+    if (this.splash) {
+      this.splash.classList.add('fade-out');
+      setTimeout(() => {
+        if (this.splash) this.splash.style.display = 'none';
+      }, 450);
+    }
+
+    // Iniciar el primer paso tras la animación
+    this.scheduleTimeout(() => {
+      this.playNextStep();
+    }, 450);
   }
 
   // ==========================================================================
@@ -76,7 +151,7 @@ class TinderChatApp {
       osc.start();
       osc.stop(this.audioCtx.currentTime + duration);
     } catch (e) {
-      // Fallback si el navegador restringe audio sin interacción previa
+      // Fallback si el navegador restringe audio
     }
   }
 
@@ -115,10 +190,37 @@ class TinderChatApp {
   }
 
   // ==========================================================================
-  // EVENT BINDINGS & KEYBOARD SHORTCUTS
+  // EVENT BINDINGS & INSTAGRAM STORIES PAUSE BEHAVIOR
   // ==========================================================================
   bindEvents() {
-    // Desbloquear audio con el primer clic o toque en cualquier parte
+    // Interacción con pantalla splash para comenzar
+    if (this.splash) {
+      this.splash.addEventListener('click', () => {
+        this.startChat();
+      });
+    }
+    if (this.splashStartBtn) {
+      this.splashStartBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.startChat();
+      });
+    }
+
+    // Comportamiento de Historias de Instagram:
+    // Presionar y mantener la pantalla pausa la reproducción, soltarla continúa
+    if (this.phoneFrame) {
+      this.phoneFrame.addEventListener('pointerdown', (e) => {
+        if (!this.hasStarted || this.isFinished) return;
+        this.handleHoldStart(e);
+      });
+    }
+
+    // Al soltar en cualquier parte de la ventana o perder foco, continuar
+    window.addEventListener('pointerup', () => this.handleHoldEnd());
+    window.addEventListener('pointercancel', () => this.handleHoldEnd());
+    window.addEventListener('blur', () => this.handleHoldEnd());
+
+    // Desbloquear audio con el primer toque
     const unlockAudio = () => {
       this.initAudio();
       window.removeEventListener('click', unlockAudio);
@@ -127,7 +229,7 @@ class TinderChatApp {
     window.addEventListener('click', unlockAudio);
     window.addEventListener('touchstart', unlockAudio);
 
-    // Atajos de teclado para control discreto
+    // Atajos de teclado para control
     window.addEventListener('keydown', (e) => {
       if (e.code === 'Space') {
         e.preventDefault();
@@ -142,11 +244,42 @@ class TinderChatApp {
     });
   }
 
+  // Manejo de pausa al presionar la pantalla (Historias de Instagram)
+  handleHoldStart(e) {
+    if (!this.hasStarted || this.isFinished || !this.isPlaying) return;
+    if (this.isHoldingPause) return;
+
+    this.isHoldingPause = true;
+    if (this.phoneFrame) this.phoneFrame.classList.add('is-holding-pause');
+    if (this.storyPausePill) this.storyPausePill.classList.add('visible');
+
+    if (this.activeTimer) {
+      this.activeTimer.pause();
+    }
+  }
+
+  // Manejo de reanudación al soltar la pantalla
+  handleHoldEnd() {
+    if (!this.isHoldingPause) return;
+
+    this.isHoldingPause = false;
+    if (this.phoneFrame) this.phoneFrame.classList.remove('is-holding-pause');
+    if (this.storyPausePill) this.storyPausePill.classList.remove('visible');
+
+    if (this.isPlaying && this.hasStarted && !this.isFinished) {
+      if (this.activeTimer) {
+        this.activeTimer.resume();
+      } else {
+        this.playNextStep();
+      }
+    }
+  }
+
   // ==========================================================================
   // PLAYBACK FLOW & ANIMATIONS
   // ==========================================================================
   playNextStep() {
-    if (!this.isPlaying) return;
+    if (!this.isPlaying || this.isHoldingPause) return;
 
     if (this.currentIndex >= this.messages.length) {
       this.finishSimulation();
@@ -159,13 +292,13 @@ class TinderChatApp {
       this.animateUserTypingAndSend(item, () => {
         this.currentIndex++;
         const nextDelay = 800 / this.speed;
-        this.timeoutId = setTimeout(() => this.playNextStep(), nextDelay);
+        this.scheduleTimeout(() => this.playNextStep(), nextDelay);
       });
     } else {
       this.animateMildretTypingAndReceive(item, () => {
         this.currentIndex++;
         const nextDelay = 850 / this.speed;
-        this.timeoutId = setTimeout(() => this.playNextStep(), nextDelay);
+        this.scheduleTimeout(() => this.playNextStep(), nextDelay);
       });
     }
   }
@@ -194,18 +327,18 @@ class TinderChatApp {
         // Hacer auto-scroll dinámico si el texto hace crecer la barra hacia abajo
         this.scrollToBottom();
 
-        this.timeoutId = setTimeout(typeNextChar, typeSpeed);
+        this.scheduleTimeout(typeNextChar, typeSpeed);
       } else {
         // Pausa breve antes de enviar
         const sendDelay = 280 / this.speed;
-        this.timeoutId = setTimeout(() => {
+        this.scheduleTimeout(() => {
           if (!this.isPlaying) return;
 
           // Animación de presionar enviar
           this.btnSend.style.transform = 'scale(0.85)';
           this.playSendSound();
 
-          setTimeout(() => {
+          this.scheduleTimeout(() => {
             this.btnSend.style.transform = '';
             // Restaurar input a su tamaño inicial
             this.inputTextDisplay.textContent = 'Escribe un mensaje...';
@@ -222,7 +355,7 @@ class TinderChatApp {
       }
     };
 
-    this.timeoutId = setTimeout(typeNextChar, 180 / this.speed);
+    this.scheduleTimeout(typeNextChar, 180 / this.speed);
   }
 
   // Simulación del indicador de escribiendo y llegada del mensaje de Mildret
@@ -234,7 +367,7 @@ class TinderChatApp {
     const baseDuration = Math.min(2200, Math.max(750, textLen * 32));
     const typingDuration = baseDuration / this.speed;
 
-    this.timeoutId = setTimeout(() => {
+    this.scheduleTimeout(() => {
       if (!this.isPlaying) return;
 
       this.typingIndicator.style.display = 'none';
@@ -246,7 +379,7 @@ class TinderChatApp {
       // Si tiene corazón rojo (liked), animar el like
       if (item.liked) {
         const likeDelay = 350 / this.speed;
-        this.timeoutId = setTimeout(() => {
+        this.scheduleTimeout(() => {
           if (!this.isPlaying) return;
           const heartBtn = row.querySelector('.btn-heart');
           if (heartBtn) {
@@ -328,7 +461,7 @@ class TinderChatApp {
         bubble.textContent = item.text;
       }
 
-      // Ícono de corazón (no interactivo manualmente)
+      // Ícono de corazón
       const heartBtn = document.createElement('div');
       heartBtn.className = `btn-heart ${item.liked ? 'liked' : ''}`;
       heartBtn.innerHTML = `
@@ -357,16 +490,25 @@ class TinderChatApp {
   // PLAYBACK CONTROL METHODS
   // ==========================================================================
   togglePlayPause() {
+    if (!this.hasStarted || this.isFinished) return;
     this.isPlaying = !this.isPlaying;
     if (this.isPlaying) {
-      this.playNextStep();
+      if (this.activeTimer) {
+        this.activeTimer.resume();
+      } else {
+        this.playNextStep();
+      }
     } else {
-      clearTimeout(this.timeoutId);
+      if (this.activeTimer) {
+        this.activeTimer.pause();
+      }
     }
   }
 
   skipToEnd() {
-    clearTimeout(this.timeoutId);
+    if (this.activeTimer) {
+      this.activeTimer.clear();
+    }
     this.typingIndicator.style.display = 'none';
 
     while (this.currentIndex < this.messages.length) {
@@ -387,9 +529,16 @@ class TinderChatApp {
   }
 
   restartSimulation() {
-    clearTimeout(this.timeoutId);
+    if (this.activeTimer) {
+      this.activeTimer.clear();
+    }
     this.currentIndex = 0;
     this.isPlaying = true;
+    this.isHoldingPause = false;
+    this.isFinished = false;
+
+    if (this.phoneFrame) this.phoneFrame.classList.remove('is-holding-pause');
+    if (this.storyPausePill) this.storyPausePill.classList.remove('visible');
 
     this.feed.innerHTML = '';
     this.typingIndicator.style.display = 'none';
@@ -402,6 +551,13 @@ class TinderChatApp {
 
   finishSimulation() {
     this.isPlaying = false;
+    this.isFinished = true;
+    if (this.activeTimer) {
+      this.activeTimer.clear();
+    }
+    if (this.storyPausePill) {
+      this.storyPausePill.classList.remove('visible');
+    }
     this.scrollToBottom();
   }
 
