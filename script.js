@@ -53,6 +53,8 @@ class TinderChatApp {
     this.hasStarted = false;
     this.isHoldingPause = false;
     this.isFinished = false;
+    this.isAnniversaryActive = false;
+    this.heartsIntervalId = null;
     this.speed = 1.0;
     this.soundEnabled = true;
     this.activeTimer = null;
@@ -62,6 +64,9 @@ class TinderChatApp {
     this.phoneFrame = document.getElementById('phoneFrame');
     this.splash = document.getElementById('tinderSplash');
     this.splashStartBtn = document.getElementById('splashStartBtn');
+    this.anniversaryScreen = document.getElementById('anniversaryScreen');
+    this.floatingHeartsLayer = document.getElementById('floatingHeartsLayer');
+    this.anniversaryReplayBtn = document.getElementById('anniversaryReplayBtn');
     this.storyPausePill = document.getElementById('storyPausePill');
     this.feed = document.getElementById('messagesFeed');
     this.chatContainer = document.getElementById('chatContainer');
@@ -189,6 +194,29 @@ class TinderChatApp {
     } catch (e) {}
   }
 
+  playCelebrationSound() {
+    if (!this.soundEnabled) return;
+    try {
+      this.initAudio();
+      if (!this.audioCtx) return;
+
+      const now = this.audioCtx.currentTime;
+      const notes = [523.25, 659.25, 783.99, 1046.50];
+      notes.forEach((freq, idx) => {
+        const osc = this.audioCtx.createOscillator();
+        const gain = this.audioCtx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(freq, now + idx * 0.12);
+        gain.gain.setValueAtTime(0.07, now + idx * 0.12);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + idx * 0.12 + 0.35);
+        osc.connect(gain);
+        gain.connect(this.audioCtx.destination);
+        osc.start(now + idx * 0.12);
+        osc.stop(now + idx * 0.12 + 0.35);
+      });
+    } catch (e) {}
+  }
+
   // ==========================================================================
   // EVENT BINDINGS & INSTAGRAM STORIES PAUSE BEHAVIOR
   // ==========================================================================
@@ -206,11 +234,19 @@ class TinderChatApp {
       });
     }
 
+    // Botón para volver a ver la conversación desde la pantalla de aniversario
+    if (this.anniversaryReplayBtn) {
+      this.anniversaryReplayBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.restartSimulation();
+      });
+    }
+
     // Comportamiento de Historias de Instagram:
     // Presionar y mantener la pantalla pausa la reproducción, soltarla continúa
     if (this.phoneFrame) {
       this.phoneFrame.addEventListener('pointerdown', (e) => {
-        if (!this.hasStarted || this.isFinished) return;
+        if (!this.hasStarted || this.isAnniversaryActive) return;
         this.handleHoldStart(e);
       });
     }
@@ -246,7 +282,7 @@ class TinderChatApp {
 
   // Manejo de pausa al presionar la pantalla (Historias de Instagram)
   handleHoldStart(e) {
-    if (!this.hasStarted || this.isFinished || !this.isPlaying) return;
+    if (!this.hasStarted || this.isAnniversaryActive) return;
     if (this.isHoldingPause) return;
 
     this.isHoldingPause = true;
@@ -266,10 +302,10 @@ class TinderChatApp {
     if (this.phoneFrame) this.phoneFrame.classList.remove('is-holding-pause');
     if (this.storyPausePill) this.storyPausePill.classList.remove('visible');
 
-    if (this.isPlaying && this.hasStarted && !this.isFinished) {
+    if (this.hasStarted && !this.isAnniversaryActive) {
       if (this.activeTimer) {
         this.activeTimer.resume();
-      } else {
+      } else if (this.isPlaying && !this.isFinished) {
         this.playNextStep();
       }
     }
@@ -532,6 +568,7 @@ class TinderChatApp {
     if (this.activeTimer) {
       this.activeTimer.clear();
     }
+    this.hideAnniversaryScreen();
     this.currentIndex = 0;
     this.isPlaying = true;
     this.isHoldingPause = false;
@@ -559,6 +596,106 @@ class TinderChatApp {
       this.storyPausePill.classList.remove('visible');
     }
     this.scrollToBottom();
+
+    // Pausa de 5 segundos al final de la conversación antes de la transición
+    const endDelay = 5000 / this.speed;
+    this.scheduleTimeout(() => {
+      this.showAnniversaryScreen();
+    }, endDelay);
+  }
+
+  // ==========================================================================
+  // ANNIVERSARY OUTRO SCREEN & FLOATING HEARTS
+  // ==========================================================================
+  showAnniversaryScreen() {
+    this.isAnniversaryActive = true;
+    if (this.storyPausePill) {
+      this.storyPausePill.classList.remove('visible');
+    }
+    if (this.anniversaryScreen) {
+      this.anniversaryScreen.style.display = 'flex';
+      // Forzar reflow para que la transición CSS funcione suavemente
+      void this.anniversaryScreen.offsetWidth;
+      this.anniversaryScreen.classList.add('visible');
+    }
+    this.startFloatingHearts();
+    this.playCelebrationSound();
+  }
+
+  hideAnniversaryScreen() {
+    this.isAnniversaryActive = false;
+    this.stopFloatingHearts();
+    if (this.anniversaryScreen) {
+      this.anniversaryScreen.classList.remove('visible');
+      this.anniversaryScreen.style.display = 'none';
+    }
+  }
+
+  startFloatingHearts() {
+    this.stopFloatingHearts();
+    if (!this.floatingHeartsLayer) return;
+
+    // Crear lote inicial de corazones distribuidos en pantalla
+    for (let i = 0; i < 9; i++) {
+      this.spawnFloatingHeart(true);
+    }
+
+    // Intervalo continuo para emitir nuevos corazones
+    this.heartsIntervalId = setInterval(() => {
+      if (!this.isAnniversaryActive) return;
+      this.spawnFloatingHeart(false);
+    }, 380);
+  }
+
+  spawnFloatingHeart(isInitial = false) {
+    if (!this.floatingHeartsLayer) return;
+
+    const heart = document.createElement('div');
+    heart.className = 'floating-heart-item';
+
+    // Generar variaciones naturales
+    const size = Math.floor(Math.random() * 22) + 16; // 16px a 38px
+    const left = Math.random() * 88 + 6; // 6% a 94%
+    const duration = (Math.random() * 2.2 + 3.4).toFixed(2); // 3.4s a 5.6s
+    const rot = (Math.random() * 60 - 30).toFixed(1) + 'deg';
+    const maxOpacity = (Math.random() * 0.45 + 0.45).toFixed(2); // 0.45 a 0.90
+
+    heart.style.width = `${size}px`;
+    heart.style.height = `${size}px`;
+    heart.style.left = `${left}%`;
+    heart.style.setProperty('--rot', rot);
+    heart.style.setProperty('--max-opacity', maxOpacity);
+    heart.style.animationDuration = `${duration}s`;
+
+    if (isInitial) {
+      const initialBottom = Math.floor(Math.random() * 480);
+      heart.style.bottom = `${initialBottom}px`;
+      heart.style.animationDelay = `-${(Math.random() * 2.8).toFixed(1)}s`;
+    }
+
+    heart.innerHTML = `
+      <svg viewBox="0 0 24 24">
+        <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
+      </svg>
+    `;
+
+    heart.addEventListener('animationend', () => {
+      if (heart.parentNode) {
+        heart.parentNode.removeChild(heart);
+      }
+    });
+
+    this.floatingHeartsLayer.appendChild(heart);
+  }
+
+  stopFloatingHearts() {
+    if (this.heartsIntervalId) {
+      clearInterval(this.heartsIntervalId);
+      this.heartsIntervalId = null;
+    }
+    if (this.floatingHeartsLayer) {
+      this.floatingHeartsLayer.innerHTML = '';
+    }
   }
 
   scrollToBottom() {
